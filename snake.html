@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Graph Paper Snake</title>
+<style>
+  :root {
+    --paper: #eef3f1;
+    --grid: #b9d3d6;
+    --ink: #1d3a6b;
+    --pencil: #d6342c;
+    --text: #1c2733;
+    --panel: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #14202b;
+      --grid: #243645;
+      --ink: #8fb8ff;
+      --pencil: #ff6a5e;
+      --text: #e6edf3;
+      --panel: #1b2a38;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--paper);
+    color: var(--text);
+    font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; padding: 12px; user-select: none; -webkit-user-select: none;
+    touch-action: manipulation;
+  }
+  h1 { margin: 0; font-size: 1.5rem; letter-spacing: .02em; }
+  .bar { display: flex; gap: 12px; width: min(92vw, 420px); }
+  .stat { flex: 1; background: var(--panel); border: 2px solid var(--ink); border-radius: 6px; padding: 6px 10px; }
+  .stat small { display: block; font-size: .75rem; opacity: .7; }
+  .stat b { font-size: 1.3rem; color: var(--ink); }
+  .wrap { position: relative; width: min(92vw, 420px); aspect-ratio: 1; }
+  canvas { width: 100%; height: 100%; display: block; border: 3px solid var(--ink); border-radius: 4px; background: var(--paper); }
+  .overlay {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 10px; text-align: center;
+    background: color-mix(in srgb, var(--paper) 88%, transparent); padding: 16px;
+  }
+  .overlay.hide { display: none; }
+  .overlay h2 { margin: 0; font-size: 1.6rem; color: var(--ink); }
+  .overlay p { margin: 0; max-width: 28ch; }
+  button {
+    font: inherit; font-weight: 700; cursor: pointer; color: var(--paper);
+    background: var(--ink); border: 0; border-radius: 6px; padding: 10px 22px;
+  }
+  button:focus-visible { outline: 3px solid var(--pencil); outline-offset: 2px; }
+  .pad { display: grid; grid-template-columns: repeat(3, 62px); grid-template-rows: repeat(2, 54px); gap: 6px; }
+  .pad button { padding: 0; font-size: 1.3rem; }
+  .pad .up { grid-column: 2; } .pad .left { grid-row: 2; grid-column: 1; }
+  .pad .down { grid-row: 2; grid-column: 2; } .pad .right { grid-row: 2; grid-column: 3; }
+  @media (hover: hover) and (pointer: fine) { .pad { display: none; } }
+</style>
+</head>
+<body>
+  <h1>Graph Paper Snake</h1>
+
+  <div class="bar">
+    <div class="stat"><small>Score</small><b id="score">0</b></div>
+    <div class="stat"><small>Best</small><b id="best">0</b></div>
+  </div>
+
+  <div class="wrap">
+    <canvas id="game" width="420" height="420" aria-label="Snake game board"></canvas>
+    <div class="overlay" id="overlay">
+      <h2 id="title">Ready?</h2>
+      <p id="msg">Guide the ink line to the red dots. Don't hit the walls or yourself.</p>
+      <button id="start">Start game</button>
+      <p><small>Arrow keys or WASD to steer. Space to pause.</small></p>
+    </div>
+  </div>
+
+  <div class="pad" aria-label="Touch controls">
+    <button class="up" data-d="up" aria-label="Up">▲</button>
+    <button class="left" data-d="left" aria-label="Left">◀</button>
+    <button class="down" data-d="down" aria-label="Down">▼</button>
+    <button class="right" data-d="right" aria-label="Right">▶</button>
+  </div>
+
+<script>
+(() => {
+  const N = 21;                       // grid size (cells per side)
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const cell = canvas.width / N;
+  const $ = id => document.getElementById(id);
+  const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+  const DIRS = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+  let snake, dir, nextDir, food, score, timer, speed, running, paused;
+
+  // High score (guarded: storage can be unavailable)
+  let best = 0;
+  try { best = +localStorage.getItem('snake-best') || 0; } catch (e) {}
+  $('best').textContent = best;
+
+  function reset() {
+    const m = Math.floor(N / 2);
+    snake = [[m, m], [m - 1, m], [m - 2, m]];
+    dir = nextDir = DIRS.right;
+    score = 0; speed = 190; paused = false;
+    $('score').textContent = 0;
+    placeFood();
+  }
+
+  function placeFood() {
+    do {
+      food = [Math.floor(Math.random() * N), Math.floor(Math.random() * N)];
+    } while (snake.some(s => s[0] === food[0] && s[1] === food[1]));
+  }
+
+  function start() {
+    reset();
+    running = true;
+    $('overlay').classList.add('hide');
+    clearInterval(timer);
+    timer = setInterval(tick, speed);
+    draw();
+  }
+
+  function setDir(name) {
+    const d = DIRS[name];
+    if (!d || !running) return;
+    // block reversing straight into yourself
+    if (d[0] === -dir[0] && d[1] === -dir[1]) return;
+    nextDir = d;
+  }
+
+  function tick() {
+    if (paused) return;
+    dir = nextDir;
+    const head = [snake[0][0] + dir[0], snake[0][1] + dir[1]];
+    const hitWall = head[0] < 0 || head[1] < 0 || head[0] >= N || head[1] >= N;
+    const hitSelf = snake.some(s => s[0] === head[0] && s[1] === head[1]);
+    if (hitWall || hitSelf) return gameOver();
+
+    snake.unshift(head);
+    if (head[0] === food[0] && head[1] === food[1]) {
+      score++;
+      $('score').textContent = score;
+      if (score % 4 === 0 && speed > 110) {  // speed up every 4 dots
+        speed -= 8;
+        clearInterval(timer);
+        timer = setInterval(tick, speed);
+      }
+      placeFood();
+    } else {
+      snake.pop();
+    }
+    draw();
+  }
+
+  function gameOver() {
+    running = false;
+    clearInterval(timer);
+    if (score > best) {
+      best = score;
+      $('best').textContent = best;
+      try { localStorage.setItem('snake-best', best); } catch (e) {}
+    }
+    $('title').textContent = 'Line ended';
+    $('msg').textContent = `You collected ${score} dot${score === 1 ? '' : 's'}.`;
+    $('start').textContent = 'Play again';
+    $('overlay').classList.remove('hide');
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // grid lines
+    ctx.strokeStyle = css('--grid');
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 1; i < N; i++) {
+      ctx.moveTo(i * cell, 0); ctx.lineTo(i * cell, canvas.height);
+      ctx.moveTo(0, i * cell); ctx.lineTo(canvas.width, i * cell);
+    }
+    ctx.stroke();
+
+    // food (red pencil dot)
+    ctx.fillStyle = css('--pencil');
+    ctx.beginPath();
+    ctx.arc((food[0] + .5) * cell, (food[1] + .5) * cell, cell * .32, 0, Math.PI * 2);
+    ctx.fill();
+
+    // snake as one continuous ink line
+    ctx.strokeStyle = css('--ink');
+    ctx.lineWidth = cell * .6;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    snake.forEach((s, i) => {
+      const x = (s[0] + .5) * cell, y = (s[1] + .5) * cell;
+      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    });
+    ctx.stroke();
+
+    // head dot
+    ctx.fillStyle = css('--ink');
+    ctx.beginPath();
+    ctx.arc((snake[0][0] + .5) * cell, (snake[0][1] + .5) * cell, cell * .4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function togglePause() {
+    if (!running) return;
+    paused = !paused;
+    $('title').textContent = 'Paused';
+    $('msg').textContent = 'Press Space or Resume to continue.';
+    $('start').textContent = 'Resume';
+    $('overlay').classList.toggle('hide', !paused);
+  }
+
+  // Input
+  const KEYS = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
+                 w: 'up', s: 'down', a: 'left', d: 'right' };
+  addEventListener('keydown', e => {
+    if (e.code === 'Space') { e.preventDefault(); running ? togglePause() : start(); return; }
+    const k = KEYS[e.key];
+    if (k) { e.preventDefault(); setDir(k); }
+  });
+
+  $('start').addEventListener('click', () => {
+    if (running && paused) togglePause(); else start();
+  });
+  document.querySelectorAll('.pad button').forEach(b =>
+    b.addEventListener('pointerdown', e => { e.preventDefault(); setDir(b.dataset.d); }));
+
+  // Swipe support on the board
+  let sx, sy;
+  canvas.addEventListener('touchstart', e => { sx = e.touches[0].clientX; sy = e.touches[0].clientY; }, { passive: true });
+  canvas.addEventListener('touchend', e => {
+    const dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy;
+    if (Math.max(Math.abs(dx), Math.abs(dy)) < 24) return;
+    setDir(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up'));
+  }, { passive: true });
+
+  // Auto-pause when tab is hidden
+  document.addEventListener('visibilitychange', () => { if (document.hidden && running && !paused) togglePause(); });
+
+  // Initial preview
+  reset(); draw();
+})();
+</script>
+</body>
+</html>
